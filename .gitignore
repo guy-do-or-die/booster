@@ -1,0 +1,5 @@
+.env
+.git
+back
+__pycache__
+secrets.py
