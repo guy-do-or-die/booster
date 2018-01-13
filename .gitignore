@@ -1,5 +1,6 @@
 .env
 .git
 back
+logs
 __pycache__
 secrets.py

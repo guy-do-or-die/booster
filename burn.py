@@ -5,56 +5,72 @@ import time
 import http
 import socket
 import signal
+import select
 import getpass
-import requests
+import logging
+
+from datetime import datetime
 
 from selenium import webdriver
 from selenium.webdriver import DesiredCapabilities
 from selenium.webdriver.chrome.options import Options
-
-from python_anticaptcha import AnticaptchaClient, NoCaptchaTaskProxylessTask
+from selenium.webdriver.common.by import By
 
 import config
 
-
-anticpatcha_client = AnticaptchaClient(config.API_KEY)
 
 universal_password = None
 solved_captchas = 0
 
 
-def surf_link(guy):
-    return config.TARGET_URL.format(guy.id)
+def now():
+    return datetime.now().strftime('%Y.%m.%d %H:%M:%S')
+
+
+logging.basicConfig(filename='logs/{}.log'.format(now()),
+                    format=config.LOG_FORMAT,
+                    level=logging.DEBUG)
+
+logger = logging.getLogger(__name__)
+
+
+def log(message, **kwargs):
+    guy = kwargs.get('guy')
+    type = kwargs.get('type', 'info')
+
+    message = '{}{}'.format(
+    message, ' ({}, {})'.format(guy.name, guy.id) if guy else '')
+
+    print('{}: {}'.format(now(), message))
+    getattr(logger, type)(message, extra=kwargs)
+
+    if config.DEBUG and type == 'error':
+        driver = kwargs.get('driver')
+        ipdb.set_trace()
+
+
+def surf_url(guy):
+    return config.SURF_URL.format(guy.id)
 
 
 def solve_captcha(url, driver):
-    try:
-        captcha = driver.find_element_by_class_name('g-recaptcha')
+    driver.switch_to_default_content()
+    driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, "iframe[src*='captcha']"))
+    driver.find_element_by_id('verify-me').click()
+    driver.switch_to_default_content()
 
-        print('captcha found')
-        site_key = captcha.get_attribute('data-sitekey')
+    if driver.find_elements_by_css_selector('frame#mainFrame'):
+        driver.switch_to_frame('mainFrame')
 
-        task = NoCaptchaTaskProxylessTask(website_url=url, website_key=site_key)
-        job = anticpatcha_client.createTask(task)
-        job.join()
-
-        token = job.get_solution_response()
-
-        global solved_captchas
-        solved_captchas += 1
-
-        print('captcha solved ({})'.format(solved_captchas))
-
-        driver.execute_script('document.getElementById("g-recaptcha-response").value="{}"'.format(token))
-
-        return True
-    except Exception as e:
-        print('no captcha', e)
-        return False
+    token = None
+    while not token:
+        if driver.find_elements_by_name('coinhive-captcha-token'):
+            token = driver.find_element_by_name('coinhive-captcha-token').get_attribute('value')
+        time.sleep(1)
 
 
 def login(driver, guy):
-    print('trying to login')
+    log('trying to login')
     driver.get(config.LOGIN_URL)
 
     form = driver.find_element_by_name('form1')
@@ -66,51 +82,45 @@ def login(driver, guy):
 
     time.sleep(config.SLEEP_AFTER_LOGIN or 2)
 
-    if solve_captcha(config.LOGIN_URL, driver):
-        form.submit()
+    solve_captcha(config.LOGIN_URL, driver)
+    form.submit()
 
-        driver.get(surf_link(guy))
-
-        print('logged in')
-        return True
-    else:
-        print('failed to login')
-        return False
+    log('logged in')
 
 
 def fire(driver, guy):
-    try:
+    if driver.find_elements_by_css_selector('frame#mainFrame'):
+        driver.switch_to_frame('mainFrame')
+
+    if driver.find_elements_by_css_selector('form#captcha'):
         form = driver.find_element_by_id('captcha')
 
-        solve_captcha(surf_link(guy), driver)
+        if driver.find_elements_by_tag_name('iframe'):
+            solve_captcha(surf_url(guy), driver)
+
         form.submit()
-    except Exception as e:
-        print(e)
+    else:
+        driver.switch_to_default_content()
+        if driver.find_elements_by_css_selector('frame#mainFrame'):
+            driver.switch_to_frame('mainFrame')
+            driver.switch_to_frame('header')
 
-    try:
-        driver.switch_to_frame('mainFrame')
-        driver.switch_to_frame('header')
-    except Exception as e:
-        print(e)
-
-    try:
         while len(driver.find_element_by_id('count').text) < 3:
             time.sleep(1)
-    except Exception as e:
-        print(e)
 
-    try:
+        if not driver.find_elements_by_css_selector('span#com font'):
+            time.sleep(3)
+
         color = driver.find_element_by_css_selector('span#com font').text
         button = driver.find_element_by_xpath('//button[@title="{}"]'.format(color))
+
+        guy.pages = int(driver.find_elements_by_css_selector('div[title*="surfed today"]')[2].text)
+
         button.click()
 
-        time.sleep(1)
-        driver.switch_to_frame('mainFrame')
-    except Exception as e:
-        print(e)
-        return False
+        driver.switch_to_default_content()
 
-    return True
+        return True
 
 
 def setup_driver():
@@ -146,7 +156,7 @@ def setup_driver():
                     driver.close()
                     driver.quit()
             except:
-                print('quitting')
+                log('quitting')
 
         signal.signal(signal.SIGINT, signal.SIG_IGN)
 
@@ -156,26 +166,23 @@ def setup_driver():
 
 
 def run(guy):
+    pages_surfed = 0
     driver = setup_driver()
-    print('boosting {}:'.format(guy.name), guy)
+    log('boosting {}:'.format(guy), guy=guy)
 
-    if login(driver, guy):
-        shares_gained = 0
+    login(driver, guy)
+    driver.get(surf_url(guy))
 
-        while shares_gained < 10 * guy.get('shares', 10):
-            try:
-                if fire(driver, guy):
-                    shares_gained += 1
-                    print('shares gained: {}'.format(shares_gained))
-                else:
-                    print('retrying...')
-            except Exception as e:
-                print(e)
-                time.sleep(config.SLEEP_ON_ERROR or 15)
-                driver.get(surf_link(guy))
+    while getattr(guy, 'pages', pages_surfed) < 100:
+        try:
+            if fire(driver, guy):
+                pages_surfed += 1
+                log('pages surfed: {}'.format(pages_surfed))
+
+        except Exception as e:
+            log(e, type='error')
 
     driver.quit()
-
 
 class Guy(dict):
     def __init__(self, guy):
@@ -185,14 +192,18 @@ class Guy(dict):
     def __getattr__(self, name):
         return self[name] if name in self else None
 
+    def __setattr__(self, name, value):
+        self[name] = value
+
     def __repr__(self):
         return 'Guy({})'.format(self.it)
 
 
 def main():
+    log('welcome!')
     global password
 
-    password = getpass.getpass('pass?\n')
+    # password = select.select([getpass.getpass('pass?\n')], [], [], 10)
 
     for g in config.GUYS:
         run(Guy(g))
@@ -202,4 +213,4 @@ try:
 except (socket.error,
         KeyboardInterrupt,
         http.client.RemoteDisconnected):
-    print('captchas spent: {}, buy!'.format(solved_captchas))
+    log('bye!'.format(solved_captchas))
