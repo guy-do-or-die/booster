@@ -4,3 +4,4 @@ back
 logs
 __pycache__
 secrets.py
+*.pyc

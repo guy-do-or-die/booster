@@ -1,8 +1,8 @@
+#! .env/bin/python
+
 import multiprocessing
 import socket
-import random
 import http
-import time
 
 from burn import run, log
 
@@ -12,12 +12,15 @@ import config
 if __name__ == '__main__':
     try:
         log('welcome!')
-        pool = multiprocessing.Pool(
-            initializer=lambda: time.sleep(random.randint(0, 20)))
 
-        pool.map_async(run, config.GUYS)
-        pool.close()
-        pool.join()
+        if config.DEBUG:
+            for g in config.GUYS:
+                run(g)
+        else:
+            pool = multiprocessing.Pool(config.THREADS_NUM)
+            pool.map_async(run, config.GUYS)
+            pool.close()
+            pool.join()
     except (socket.error,
             KeyboardInterrupt,
             http.client.RemoteDisconnected) as e:

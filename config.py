@@ -1,13 +1,13 @@
-DEBUG = False
+DEBUG = True
 
-SLEEP_AFTER_LOGIN = 2
 SLEEP_ON_ERROR = 15
-
-LOAD_TIMEOUT = 120
+LOAD_TIMEOUT = 60
 
 DB = ''
 
 LOG_FORMAT = '%(asctime)-15s %(message)s'
+
+THREADS_NUM = 1
 
 
 # hush!

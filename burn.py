@@ -1,12 +1,6 @@
-#! .env/bin/python
-
 import ipdb
 import time
-import http
-import socket
 import signal
-import select
-import getpass
 import logging
 
 from datetime import datetime
@@ -14,13 +8,15 @@ from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver import DesiredCapabilities
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 
 import config
 
+from utils import wait, element_has_attribute
+
 
 universal_password = None
-solved_captchas = 0
 
 
 def now():
@@ -46,27 +42,35 @@ def log(message, **kwargs):
 
     if config.DEBUG and type == 'error':
         driver = kwargs.get('driver')
-        ipdb.set_trace()
+        # ipdb.set_trace()
 
 
 def surf_url(guy):
     return config.SURF_URL.format(guy.id)
 
 
-def solve_captcha(url, driver):
-    driver.switch_to_default_content()
-    driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, "iframe[src*='captcha']"))
-    driver.find_element_by_id('verify-me').click()
-    driver.switch_to_default_content()
+def switch(driver, frame):
+    driver.switch_to.default_content()
 
     if driver.find_elements_by_css_selector('frame#mainFrame'):
         driver.switch_to_frame('mainFrame')
 
-    token = None
-    while not token:
-        if driver.find_elements_by_name('coinhive-captcha-token'):
-            token = driver.find_element_by_name('coinhive-captcha-token').get_attribute('value')
-        time.sleep(1)
+    if frame == 'header' and driver.find_elements_by_css_selector('frame[name="header"]'):
+        driver.switch_to_frame('header')
+
+    if frame == 'captcha' and driver.find_elements_by_css_selector('iframe[src*="captcha"]'):
+        driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, "iframe[src*='captcha']"))
+
+
+def solve_captcha(url, driver):
+    switch(driver, 'mainFrame')
+    switch(driver, 'captcha')
+
+    wait(driver, EC.presence_of_element_located((By.ID, 'verify-me'))).click()
+
+    switch(driver, 'mainFrame')
+
+    wait(driver, element_has_attribute((By.NAME, 'coinhive-captcha-token'), 'value'))
 
 
 def login(driver, guy):
@@ -78,9 +82,7 @@ def login(driver, guy):
     password = driver.find_element_by_name('password')
 
     email.send_keys(guy.email)
-    password.send_keys(guy.password or universal_password or config.PASSWORD)
-
-    time.sleep(config.SLEEP_AFTER_LOGIN or 2)
+    password.send_keys(guy.password or config.PASSWORD)
 
     solve_captcha(config.LOGIN_URL, driver)
     form.submit()
@@ -89,8 +91,7 @@ def login(driver, guy):
 
 
 def fire(driver, guy):
-    if driver.find_elements_by_css_selector('frame#mainFrame'):
-        driver.switch_to_frame('mainFrame')
+    switch(driver, 'mainFrame')
 
     if driver.find_elements_by_css_selector('form#captcha'):
         form = driver.find_element_by_id('captcha')
@@ -100,25 +101,17 @@ def fire(driver, guy):
 
         form.submit()
     else:
-        driver.switch_to_default_content()
-        if driver.find_elements_by_css_selector('frame#mainFrame'):
-            driver.switch_to_frame('mainFrame')
-            driver.switch_to_frame('header')
+        switch(driver, 'header')
 
-        while len(driver.find_element_by_id('count').text) < 3:
-            time.sleep(1)
+        guy.pages = int(driver.find_elements_by_css_selector(
+            'div[title*="surfed today"]')[2].text)
 
-        if not driver.find_elements_by_css_selector('span#com font'):
-            time.sleep(3)
+        wait(driver, EC.presence_of_element_located(
+            (By.CSS_SELECTOR, 'button[onclick*="submitform"]'))).click()
 
-        color = driver.find_element_by_css_selector('span#com font').text
-        button = driver.find_element_by_xpath('//button[@title="{}"]'.format(color))
+        switch(driver, 'mainFrame')
 
-        guy.pages = int(driver.find_elements_by_css_selector('div[title*="surfed today"]')[2].text)
-
-        button.click()
-
-        driver.switch_to_default_content()
+        wait(driver, EC.presence_of_element_located((By.CSS_SELECTOR, 'form#captcha')))
 
         return True
 
@@ -165,25 +158,6 @@ def setup_driver():
     return driver
 
 
-def run(guy):
-    pages_surfed = 0
-    driver = setup_driver()
-    log('boosting {}:'.format(guy), guy=guy)
-
-    login(driver, guy)
-    driver.get(surf_url(guy))
-
-    while getattr(guy, 'pages', pages_surfed) < 100:
-        try:
-            if fire(driver, guy):
-                pages_surfed += 1
-                log('pages surfed: {}'.format(pages_surfed))
-
-        except Exception as e:
-            log(e, type='error')
-
-    driver.quit()
-
 class Guy(dict):
     def __init__(self, guy):
         self.__dict__.update(**guy)
@@ -199,18 +173,27 @@ class Guy(dict):
         return 'Guy({})'.format(self.it)
 
 
-def main():
-    log('welcome!')
-    global password
+def run(g):
+    guy = Guy(g)
 
-    # password = select.select([getpass.getpass('pass?\n')], [], [], 10)
+    pages_surfed = 0
+    driver = setup_driver()
+    log('boosting!', guy=guy)
 
-    for g in config.GUYS:
-        run(Guy(g))
+    login(driver, guy)
 
-try:
-    main()
-except (socket.error,
-        KeyboardInterrupt,
-        http.client.RemoteDisconnected):
-    log('bye!'.format(solved_captchas))
+    driver.get(surf_url(guy))
+
+    while (getattr(guy, 'pages') or pages_surfed) < 100:
+        try:
+            if fire(driver, guy):
+                pages_surfed += 1
+                guy.pages += 1
+
+                log('pages surfed: {}'.format(pages_surfed))
+
+        except Exception as e:
+            log(e, type='error')
+            time.sleep(config.SLEEP_ON_ERROR)
+
+    driver.quit()
