@@ -4,23 +4,32 @@ import multiprocessing
 import socket
 import http
 
-from burn import run, log
+from burn import surf, log, reg
 
 import config
+
+from db import Guy
 
 
 if __name__ == '__main__':
     try:
         log('welcome!')
 
-        if config.DEBUG:
-            for g in config.GUYS:
-                run(g)
-        else:
-            pool = multiprocessing.Pool(config.THREADS_NUM)
-            pool.map_async(run, config.GUYS)
-            pool.close()
-            pool.join()
+        if 'surf':
+            guys = Guy.objects()
+
+            if config.DEBUG:
+                for guy in guys:
+                    surf(guy)
+            else:
+                pool = multiprocessing.Pool(config.THREADS_NUM)
+                pool.map_async(surf, guys)
+                pool.close()
+                pool.join()
+
+        if 'reg':
+            reg(3)
+
     except (socket.error,
             KeyboardInterrupt,
             http.client.RemoteDisconnected) as e:

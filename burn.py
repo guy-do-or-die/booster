@@ -4,6 +4,7 @@ import signal
 import logging
 
 from datetime import datetime
+from itertools import zip_longest
 
 from selenium import webdriver
 from selenium.webdriver import DesiredCapabilities
@@ -11,10 +12,12 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 
-import config
+from stem.control import Controller
+from stem import Signal
 
 from utils import wait, element_has_attribute
 
+import config
 
 universal_password = None
 
@@ -35,18 +38,24 @@ def log(message, **kwargs):
     type = kwargs.get('type', 'info')
 
     message = '{}{}'.format(
-    message, ' ({}, {})'.format(guy.name, guy.id) if guy else '')
+    message, ' ({}, {})'.format(guy.name, guy.ref_id) if guy else '')
 
     print('{}: {}'.format(now(), message))
     getattr(logger, type)(message, extra=kwargs)
 
     if config.DEBUG and type == 'error':
         driver = kwargs.get('driver')
-        # ipdb.set_trace()
+        config.DEBUG and ipdb.set_trace()
+
+
+def reconn():
+    with Controller.from_port(port=config.TOR_PORT) as controller:
+        controller.authenticate()
+        controller.signal(Signal.NEWNYM)
 
 
 def surf_url(guy):
-    return config.SURF_URL.format(guy.id)
+    return config.SURF_URL.format(guy.ref_id)
 
 
 def switch(driver, frame):
@@ -61,12 +70,16 @@ def switch(driver, frame):
     if frame == 'captcha' and driver.find_elements_by_css_selector('iframe[src*="captcha"]'):
         driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, "iframe[src*='captcha']"))
 
+    if frame == 'stat':
+        driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, "iframe[name*='mainiFrame']"))
+
 
 def solve_captcha(url, driver):
     switch(driver, 'mainFrame')
     switch(driver, 'captcha')
 
-    wait(driver, EC.presence_of_element_located((By.ID, 'verify-me'))).click()
+    if not driver.find_elements_by_css_selector('checkmark'):
+        wait(driver, EC.presence_of_element_located((By.CSS_SELECTOR, 'div[id="verify-me"]'))).click()
 
     switch(driver, 'mainFrame')
 
@@ -82,7 +95,7 @@ def login(driver, guy):
     password = driver.find_element_by_name('password')
 
     email.send_keys(guy.email)
-    password.send_keys(guy.password or config.PASSWORD)
+    password.send_keys(config.PASSWORD)
 
     solve_captcha(config.LOGIN_URL, driver)
     form.submit()
@@ -103,7 +116,7 @@ def fire(driver, guy):
     else:
         switch(driver, 'header')
 
-        guy.pages = int(driver.find_elements_by_css_selector(
+        guy.pages_today = int(driver.find_elements_by_css_selector(
             'div[title*="surfed today"]')[2].text)
 
         wait(driver, EC.presence_of_element_located(
@@ -120,8 +133,9 @@ def setup_driver():
     try:
         chrome_options = Options()
         # chrome_options.add_argument('--headless')
-        chrome_options.add_argument("--mute-audio")
+        chrome_options.add_argument('--mute-audio')
         chrome_options.add_argument('--webdriver-logfile=webdrive.log')
+        #chrome_options.add_argument('--proxy-server=127.0.0.1:8118')
 
         prefs = {'profile.managed_default_content_settings.images': 2}
         chrome_options.add_experimental_option('prefs', prefs)
@@ -137,7 +151,7 @@ def setup_driver():
         driver.set_page_load_timeout(max_wait)
         driver.set_script_timeout(max_wait)
     except Exception as e:
-        ipdb.set_trace()
+        config.DEBUG and ipdb.set_trace()
 
     def handler(*args):
         if config.DEBUG:
@@ -158,24 +172,7 @@ def setup_driver():
     return driver
 
 
-class Guy(dict):
-    def __init__(self, guy):
-        self.__dict__.update(**guy)
-        self.it = guy
-
-    def __getattr__(self, name):
-        return self[name] if name in self else None
-
-    def __setattr__(self, name, value):
-        self[name] = value
-
-    def __repr__(self):
-        return 'Guy({})'.format(self.it)
-
-
-def run(g):
-    guy = Guy(g)
-
+def surf(guy):
     pages_surfed = 0
     driver = setup_driver()
     log('boosting!', guy=guy)
@@ -184,16 +181,68 @@ def run(g):
 
     driver.get(surf_url(guy))
 
-    while (getattr(guy, 'pages') or pages_surfed) < 100:
+    fail = 0
+    while getattr(guy, 'pages_today') or pages_surfed < config.PAGES_PER_DAY:
         try:
             if fire(driver, guy):
                 pages_surfed += 1
-                guy.pages += 1
+                guy.pages_today += 1
 
-                log('pages surfed: {}'.format(pages_surfed))
+                log('pages surfed: {}/{}'.format(
+                    pages_surfed, guy.pages_today), guy=guy)
 
         except Exception as e:
             log(e, type='error')
-            time.sleep(config.SLEEP_ON_ERROR)
+            if fail < 1:
+                time.sleep(config.SLEEP_ON_ERROR)
+                fail += 1
+
+            driver.get(surf_url(guy))
+            fail = 0
+
+    stat(g, driver)
 
     driver.quit()
+
+
+def stat(guy, driver=None):
+    if not driver:
+        driver = setup_driver()
+        login(driver, guy)
+
+    driver.get(config.STAT_URL)
+
+    switch(driver, 'stat')
+
+    for row in driver.find_elements_by_tag_name('tr'):
+        title, data = (cell.text for cell in row.find_elements_by_tag_name('td'))
+
+        if 'Pages Surfed Today' in title:
+            guy.pages_today = int(data.split('\n')[0])
+
+        if 'Total Pages Surfed' in title:
+            guy.pages_total = int(data.replace(',', ''))
+
+        if 'Shares Earned Today' in title:
+            guy.shares_today = int(data)
+
+        if 'Current Earnings' in title:
+            guy.earnings = float(data[-10:])
+
+    guy.updated = datetime.now()
+    guy.level = 2
+
+    try:
+        guy.save()
+    except Exception as e:
+        log(e, type='error')
+
+    driver.quit()
+
+
+def prop():
+    pass
+
+
+def reg(g, num):
+    pass

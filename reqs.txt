@@ -1,2 +1,4 @@
 ipdb
+stem
 selenium
+mongoengine

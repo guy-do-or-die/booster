@@ -4,4 +4,5 @@ back
 logs
 __pycache__
 secrets.py
+nohup.out
 *.pyc
