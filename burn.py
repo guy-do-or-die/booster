@@ -200,7 +200,7 @@ def surf(guy):
             driver.get(surf_url(guy))
             fail = 0
 
-    stat(g, driver)
+    stat(guy, driver)
 
     driver.quit()
 
