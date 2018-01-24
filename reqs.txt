@@ -1,4 +1,7 @@
 ipdb
 stem
+names
 selenium
+apiclient
 mongoengine
+google-api-python-client

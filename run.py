@@ -15,8 +15,15 @@ if __name__ == '__main__':
     try:
         log('welcome!')
 
-        if 'surf':
-            guys = Guy.objects()
+        if 1:
+            for g in Guy.objects(level=2):
+                reg(g, 2)
+
+        if 0:
+            guys = []
+
+            for l in range(3):
+                guys.extend(Guy.objects(level=l))
 
             if config.DEBUG:
                 for guy in guys:
@@ -26,9 +33,6 @@ if __name__ == '__main__':
                 pool.map_async(surf, guys)
                 pool.close()
                 pool.join()
-
-        if 'reg':
-            reg(3)
 
     except (socket.error,
             KeyboardInterrupt,
